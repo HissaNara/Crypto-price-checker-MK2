@@ -20,7 +20,7 @@ def fetch_price():
             print("Error fetching price:", e)
         time.sleep(time_interval)
 
-@app.before_first_request
+@app.before_serving
 def start_fetching():
     thread = threading.Thread(target=fetch_price, daemon=True)
     thread.start()
