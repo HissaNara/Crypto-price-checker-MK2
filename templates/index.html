@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark">
+  <title>BTCUSDT</title>
+  <style>
+    /* ===== Minimal theme (light default, dark supported) ===== */
+    :root {
+      --bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --up: #16a34a;
+      --down: #dc2626;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0b0f1a; --text:#e6edf6; --muted:#93a4c3; --up:#22c55e; --down:#ef4444; }
+    }
+    :root[data-theme="dark"] { --bg:#0b0f1a; --text:#e6edf6; --muted:#93a4c3; --up:#22c55e; --down:#ef4444; }
+
+    /* ===== Layout ===== */
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: grid; place-items: center;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    }
+
+    /* Centered stack */
+    .stack { display:flex; flex-direction:column; align-items:center; gap:16px; text-align:center; }
+    .symbol { letter-spacing:.08em; font-weight:700; font-size:clamp(14px,2.4vw,18px); color:var(--muted); text-transform:uppercase; }
+    .price { font-variant-numeric: tabular-nums; font-size: clamp(40px, 12vw, 96px); font-weight: 800; line-height: 1.05; }
+    .price .int { letter-spacing:.5px; }
+    .price .dot { opacity:.9; }
+    .price .frac { transition: color 160ms ease, text-shadow 160ms ease; }
+    .price .frac.up { color: var(--up); text-shadow: 0 0 10px color-mix(in oklab, var(--up) 35%, transparent); }
+    .price .frac.down { color: var(--down); text-shadow: 0 0 10px color-mix(in oklab, var(--down) 35%, transparent); }
+    .time { font-size: clamp(12px, 2.4vw, 14px); color: var(--muted); }
+
+    /* Theme toggle (top-left) */
+    .theme-toggle {
+      position: fixed; left: max(10px, env(safe-area-inset-left)); top: max(10px, env(safe-area-inset-top));
+      width: 40px; height: 40px; border-radius: 10px; border: none;
+      display: grid; place-items: center; cursor: pointer;
+      color: var(--text); background: transparent;
+    }
+    .theme-toggle svg { width: 22px; height: 22px; }
+  </style>
+</head>
+<body>
+  <!-- ダークモード切替（左上） -->
+  <button class="theme-toggle" id="themeBtn" aria-label="テーマ切替" title="テーマ切替">
+    <svg id="iconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2m10-10h-2M4 12H2m15.07 6.93-1.41-1.41M8.34 8.34 6.93 6.93m10.61 0-1.41 1.41M8.34 15.66l-1.41 1.41"/></svg>
+    <svg id="iconMoon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
+  </button>
+
+  <main class="stack">
+    <div class="symbol" id="symbol">BTCUSDT</div>
+    <div class="price" id="price"><span class="int">--</span><span class="dot">.</span><span class="frac" id="frac">--</span></div>
+    <div class="time" id="srvtime">--:--:--</div>
+  </main>
+
+  <script>
+    // ===== Config =====
+    const POLL_MS = 1000;
+    const DEMO_MODE = false; // Flaskの /price を使う
+
+    // ===== 初期値（Flaskから渡される） =====
+    const INITIAL_PRICE = {{ price|tojson }};  // None の場合は null
+    const INITIAL_TIME  = {{ time|tojson }};
+
+    // ===== Theme toggle =====
+    const root = document.documentElement;
+    const btn = document.getElementById('themeBtn');
+    const iconSun = document.getElementById('iconSun');
+    const iconMoon = document.getElementById('iconMoon');
+    function applyTheme(theme){
+      if (theme === 'dark'){ root.setAttribute('data-theme','dark'); iconSun.style.display='none'; iconMoon.style.display='block'; }
+      else { root.removeAttribute('data-theme'); iconSun.style.display='block'; iconMoon.style.display='none'; }
+      localStorage.setItem('theme', theme || 'system');
+    }
+    (function(){
+      const saved = localStorage.getItem('theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      applyTheme(saved ? saved : (prefersDark ? 'dark' : 'light'));
+    })();
+    btn.addEventListener('click', () => {
+      const isDark = root.getAttribute('data-theme') === 'dark';
+      applyTheme(isDark ? 'light' : 'dark');
+    });
+
+    // ===== Elements & utils =====
+    let prev = null;
+    const el = { frac: document.getElementById('frac'), srvtime: document.getElementById('srvtime') };
+    function format2(x){
+      if (x == null) return '--.--';
+      const n = Number(x); if (!Number.isFinite(n)) return String(x);
+      return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function fmtJST(date = new Date()) {
+      return new Intl.DateTimeFormat('ja-JP', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(date);
+    }
+
+    function renderPrice(value, dir){
+      const formatted = format2(value);
+      const [intPart, fracPart] = formatted.split('.');
+      document.querySelector('#price .int').textContent = intPart;
+      document.querySelector('#price .dot').textContent = '.';
+      el.frac.textContent = fracPart ?? '--';
+      el.frac.classList.remove('up', 'down');
+      if (dir > 0) el.frac.classList.add('up');
+      else if (dir < 0) el.frac.classList.add('down');
+    }
+
+    // 初期描画：Flaskから渡された値を反映
+    (function initFromServer(){
+      if (INITIAL_PRICE !== null && INITIAL_PRICE !== undefined){
+        const p = Number(INITIAL_PRICE);
+        if (Number.isFinite(p)) { prev = p; renderPrice(p, 0); }
+      }
+      if (INITIAL_TIME) { el.srvtime.textContent = INITIAL_TIME; }
+    })();
+
+    // Demo: random walk（必要なら切替）
+    let demo = { cur: Number(INITIAL_PRICE) || 60000 };
+    function simulateNext(){
+      const step = (Math.random() - 0.5) * 200; // -100〜+100
+      demo.cur = Math.max(100, demo.cur + step);
+      return Number(demo.cur.toFixed(2));
+    }
+
+    async function tick(){
+      try {
+        let price, serverTime;
+        if (DEMO_MODE){ price = simulateNext(); serverTime = fmtJST(new Date()); }
+        else {
+          const r = await fetch('/price', { cache: 'no-store' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          price = Number(data.price);
+          serverTime = data.time ?? fmtJST(new Date());
+        }
+        let dir = 0;
+        if (prev != null && Number.isFinite(price) && Number.isFinite(prev)){
+          if (price > prev) dir = 1; else if (price < prev) dir = -1;
+        }
+        renderPrice(price, dir); prev = price; el.srvtime.textContent = serverTime || '—';
+      } catch (err) { console.error(err); }
+    }
+
+    tick(); setInterval(tick, POLL_MS);
+  </script>
+</body>
+</html>
